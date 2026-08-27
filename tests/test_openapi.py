@@ -4,6 +4,7 @@ import pytest
 
 CONTACTS_PATH = "/api/v1/contacts"
 ITEM_PATH = f"{CONTACTS_PATH}/{{contact_id}}"
+PHOTO_PATH = f"{ITEM_PATH}/photo"
 HTTP_METHODS = ("get", "post", "put", "patch", "delete")
 
 
@@ -65,6 +66,7 @@ def test_operation_ids_are_stable_and_unique(spec):
         "createContact",
         "listContacts",
         "getContact",
+        "getContactPhoto",
         "replaceContact",
         "updateContact",
         "deleteContact",
@@ -76,6 +78,7 @@ def test_operation_ids_are_stable_and_unique(spec):
 def test_all_endpoints_are_present(spec):
     assert set(spec["paths"][CONTACTS_PATH]) == {"get", "post"}
     assert set(spec["paths"][ITEM_PATH]) == {"get", "put", "patch", "delete"}
+    assert set(spec["paths"][PHOTO_PATH]) == {"get"}
     assert "/health" in spec["paths"]
 
 
@@ -123,6 +126,14 @@ def test_path_parameter_is_described(spec):
     param = spec["paths"][ITEM_PATH]["get"]["parameters"][0]
     assert param["name"] == "contact_id"
     assert param["description"]
+
+
+def test_list_items_omit_the_photo(spec):
+    """A page of inline photos would be enormous, so list items carry a flag instead."""
+    item = spec["components"]["schemas"]["ContactListItem"]
+    assert "photo" not in item["properties"]
+    assert item["properties"]["has_photo"]["description"]
+    assert "photo" in spec["components"]["schemas"]["ContactRead"]["properties"]
 
 
 def test_contact_fields_are_described_and_have_examples(spec):

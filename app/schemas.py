@@ -1,10 +1,28 @@
 from datetime import datetime, timezone
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+
+from app.photo import ALLOWED_MEDIA_TYPES, MAX_PHOTO_BYTES, validate_photo
+
+# A 1x1 transparent PNG — short enough to keep the OpenAPI examples readable.
+_EXAMPLE_PHOTO = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+    "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+PhotoDataUrl = Annotated[str | None, AfterValidator(validate_photo)]
+"""A base64 `data:` URL holding the contact's photo. See `app.photo`."""
+
+_PHOTO_DESCRIPTION = (
+    "Profile photo as a base64 `data:` URL. Accepts "
+    f"{', '.join(ALLOWED_MEDIA_TYPES)}, up to {MAX_PHOTO_BYTES // 1024 // 1024} MB decoded. "
+    "Send `null` or omit it for no photo — clients fall back to the contact's initials."
+)
 
 
-class ContactBase(BaseModel):
-    """Fields shared by every contact request and response."""
+class ContactFields(BaseModel):
+    """Every editable field except the photo, which not every schema carries."""
 
     first_name: str = Field(
         min_length=1,
@@ -78,6 +96,7 @@ _FULL_EXAMPLE = {
     "phone": "+1-415-555-0101",
     "company": "Analytical Engines",
     "job_title": "Mathematician",
+    "photo": None,
     "address": "1 Market St, Suite 400",
     "city": "San Francisco",
     "state": "CA",
@@ -86,6 +105,16 @@ _FULL_EXAMPLE = {
     "notes": "Met at the SF hackathon.",
 }
 _MINIMAL_EXAMPLE = {"first_name": "Grace", "last_name": "Hopper", "email": "grace@example.com"}
+
+
+class ContactBase(ContactFields):
+    """Every editable field, photo included — the body of a create or a replace."""
+
+    photo: PhotoDataUrl = Field(
+        default=None,
+        description=_PHOTO_DESCRIPTION,
+        examples=[_EXAMPLE_PHOTO],
+    )
 
 
 class ContactCreate(ContactBase):
@@ -128,6 +157,7 @@ class ContactUpdate(BaseModel):
     phone: str | None = Field(default=None, max_length=40, description="New phone number.")
     company: str | None = Field(default=None, max_length=200, description="New company.")
     job_title: str | None = Field(default=None, max_length=200, description="New job title.")
+    photo: PhotoDataUrl = Field(default=None, description="New photo; send `null` to remove it.")
     address: str | None = Field(default=None, max_length=300, description="New street address.")
     city: str | None = Field(default=None, max_length=120, description="New city.")
     state: str | None = Field(default=None, max_length=120, description="New state or region.")
@@ -136,23 +166,8 @@ class ContactUpdate(BaseModel):
     notes: str | None = Field(default=None, description="New notes; replaces the existing text.")
 
 
-class ContactRead(ContactBase):
-    """A stored contact, as returned by every contact endpoint."""
-
-    model_config = ConfigDict(
-        from_attributes=True,
-        json_schema_extra={
-            "examples": [
-                {
-                    **_FULL_EXAMPLE,
-                    "id": 1,
-                    "full_name": "Ada Lovelace",
-                    "created_at": "2026-08-19T16:22:58.189507Z",
-                    "updated_at": "2026-08-19T16:22:58.189511Z",
-                }
-            ]
-        },
-    )
+class _StoredContact(ContactFields):
+    """The server-owned fields every stored-contact response carries."""
 
     id: int = Field(description="Server-assigned identifier.", examples=[1])
     created_at: datetime = Field(
@@ -177,10 +192,64 @@ class ContactRead(ContactBase):
         return f"{self.first_name} {self.last_name}".strip()
 
 
+class ContactRead(ContactBase, _StoredContact):
+    """A single stored contact, with its photo inline."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    **_FULL_EXAMPLE,
+                    "id": 1,
+                    "full_name": "Ada Lovelace",
+                    "created_at": "2026-08-19T16:22:58.189507Z",
+                    "updated_at": "2026-08-19T16:22:58.189511Z",
+                }
+            ]
+        },
+    )
+
+
+class ContactListItem(_StoredContact):
+    """
+    A contact as it appears on a list page: everything except the photo.
+
+    A page may hold up to 200 contacts, so repeating an inline photo on every row
+    would let one response reach hundreds of megabytes of base64. The photo is
+    left out of the query entirely and `has_photo` carries the single bit a client
+    needs — fetch `GET /api/v1/contacts/{id}/photo`, or fall back to initials.
+    """
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    **{key: value for key, value in _FULL_EXAMPLE.items() if key != "photo"},
+                    "id": 1,
+                    "full_name": "Ada Lovelace",
+                    "has_photo": True,
+                    "created_at": "2026-08-19T16:22:58.189507Z",
+                    "updated_at": "2026-08-19T16:22:58.189511Z",
+                }
+            ]
+        },
+    )
+
+    has_photo: bool = Field(
+        description=(
+            "Whether this contact has a photo. Fetch it from "
+            "`/api/v1/contacts/{id}/photo`; when false, show their initials."
+        ),
+        examples=[True],
+    )
+
+
 class ContactPage(BaseModel):
     """One page of contacts plus the totals a client needs to paginate."""
 
-    items: list[ContactRead] = Field(description="Contacts on this page, ordered by the requested sort.")
+    items: list[ContactListItem] = Field(description="Contacts on this page, ordered by the requested sort.")
     total: int = Field(
         description="Total contacts matching the query, ignoring `limit` and `offset`.",
         examples=[42],

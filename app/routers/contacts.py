@@ -1,11 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app import crud
 from app.database import get_db
 from app.models import Contact
+from app.photo import decode_photo, etag_matches, photo_etag
 from app.schemas import (
     ContactCreate,
+    ContactListItem,
     ContactPage,
     ContactRead,
     ContactReplace,
@@ -96,12 +98,16 @@ def list_contacts(
     `total` tells you how many contacts match regardless of `limit`/`offset`.
     An unrecognised `sort_by` is rejected with `422` — sort fields are validated
     against an allow-list, never interpolated into SQL.
+
+    Photos are **not** inlined here: a full page of them would be hundreds of
+    megabytes. Each item carries `has_photo` instead — fetch the image itself
+    from `/api/v1/contacts/{id}/photo`.
     """
     items, total = crud.list_contacts(
         db, search=search, limit=limit, offset=offset, sort_by=sort_by, order=order
     )
     return ContactPage(
-        items=[ContactRead.model_validate(item) for item in items],
+        items=[ContactListItem.model_validate(item) for item in items],
         total=total,
         limit=limit,
         offset=offset,
@@ -119,6 +125,56 @@ def list_contacts(
 def get_contact(contact_id: int = CONTACT_ID, db: Session = Depends(get_db)) -> Contact:
     """Fetch a single contact by its id."""
     return _get_or_404(db, contact_id)
+
+
+NO_PHOTO = {
+    "model": ErrorResponse,
+    "description": "The contact exists but has no photo.",
+    "content": {"application/json": {"example": {"detail": "Contact 42 has no photo"}}},
+}
+
+
+@router.get(
+    "/{contact_id}/photo",
+    operation_id="getContactPhoto",
+    summary="Get a contact's photo",
+    response_class=Response,
+    response_description="The photo itself, as image bytes.",
+    responses={
+        status.HTTP_200_OK: {
+            "description": "The photo itself, as image bytes.",
+            "content": {"image/jpeg": {}, "image/png": {}, "image/gif": {}, "image/webp": {}},
+        },
+        status.HTTP_304_NOT_MODIFIED: {"description": "The photo matches the client's `If-None-Match`."},
+        status.HTTP_404_NOT_FOUND: NO_PHOTO,
+    },
+)
+def get_contact_photo(
+    contact_id: int = CONTACT_ID,
+    if_none_match: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> Response:
+    """
+    Serve a contact's photo as image bytes.
+
+    List responses leave photos out and report `has_photo` instead, so this is
+    where a client fetches the image. It is decoded from the stored `data:` URL
+    and returned with a strong `ETag`, which makes an unchanged avatar a `304`
+    on every render after the first. A contact with no photo returns `404`, so a
+    client can simply fall back to their initials.
+    """
+    contact = _get_or_404(db, contact_id)
+    if not contact.photo:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Contact {contact_id} has no photo")
+
+    etag = photo_etag(contact.photo)
+    # Photos are private to the address book, so allow caching but not by shared proxies.
+    headers = {"ETag": etag, "Cache-Control": "private, max-age=300"}
+    if etag_matches(if_none_match, etag):
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+
+    media_type, raw = decode_photo(contact.photo)
+    return Response(content=raw, media_type=media_type, headers=headers)
 
 
 @router.put(

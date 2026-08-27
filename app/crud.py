@@ -1,10 +1,18 @@
-from sqlalchemy import func, or_, select
+from collections.abc import Sequence
+from typing import Any
+
+from sqlalchemy import Row, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Contact
 from app.schemas import ContactCreate, ContactReplace, ContactUpdate
 
 SORTABLE_FIELDS = ("id", "first_name", "last_name", "email", "company", "created_at", "updated_at")
+
+# Every mapped column except the photo. A list page holds up to 200 rows, so the
+# photo is never selected there — `has_photo` below carries the one bit a client
+# needs, and the image itself is served by its own endpoint.
+LIST_COLUMNS = [column for column in Contact.__table__.columns if column.name != "photo"]
 
 
 def _normalize_email(email: str) -> str:
@@ -32,9 +40,15 @@ def list_contacts(
     offset: int = 0,
     sort_by: str = "id",
     order: str = "asc",
-) -> tuple[list[Contact], int]:
-    """Return (page of contacts, total matching count)."""
-    stmt = select(Contact)
+) -> tuple[Sequence[Row[Any]], int]:
+    """
+    Return (page of contacts, total matching count).
+
+    Rows carry `LIST_COLUMNS` plus `has_photo`, not whole `Contact` entities, so
+    the photo column never leaves the database on a list request. They validate
+    into `ContactListItem` the same way an ORM object would.
+    """
+    stmt = select(*LIST_COLUMNS, Contact.photo.is_not(None).label("has_photo"))
 
     if search:
         pattern = f"%{search.strip().lower()}%"
@@ -55,8 +69,8 @@ def list_contacts(
     column = getattr(Contact, sort_by)
     stmt = stmt.order_by(column.desc() if order == "desc" else column.asc())
 
-    items = db.execute(stmt.limit(limit).offset(offset)).scalars().all()
-    return list(items), total
+    items = db.execute(stmt.limit(limit).offset(offset)).all()
+    return items, total
 
 
 def create_contact(db: Session, payload: ContactCreate) -> Contact:
