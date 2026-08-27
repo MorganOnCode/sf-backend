@@ -109,7 +109,7 @@ also read):
 
 ```
 first_name, last_name, email, phone, company, job_title, photo,
-address, city, state, postal_code, country, notes
+addresses[], notes
 ```
 
 Responses add `id`, `full_name`, `created_at`, and `updated_at` (UTC).
@@ -147,6 +147,44 @@ unchanged avatar is a `304` on every render after the first. A contact with no
 photo returns `404`, which is the client's cue to show initials. `GET` on a
 single contact still includes the full `photo`, which is what an edit form
 needs to round-trip it.
+
+#### `addresses`
+
+A contact has **many** addresses, each with a `type` of `home`, `work`, or
+`other`. They are rows in an `addresses` table with a foreign key back to
+`contacts` — not extra columns, and not a JSON blob:
+
+```jsonc
+// POST /api/v1/contacts
+{
+  "first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com",
+  "addresses": [
+    { "type": "work", "street": "1 Market St", "city": "San Francisco",
+      "state": "CA", "postal_code": "94105", "country": "USA" },
+    { "type": "home", "street": "12 St James's Square", "city": "London",
+      "postal_code": "SW1Y 4JH", "country": "UK" }
+  ]
+}
+```
+
+Each stored address comes back with its own `id`. A contact may have none, or
+up to 20.
+
+The foreign key is declared `ON DELETE CASCADE` and the relationship is
+`delete-orphan`, so **deleting a contact deletes its addresses** and no row is
+ever left pointing at a contact that is gone.
+
+| Verb | What happens to the addresses |
+| --- | --- |
+| `PUT` | The list replaces the stored set outright. Omit it and every address is removed — same full-replacement rule as every other field. |
+| `PATCH` | Omit the key and they are left alone. Send `[]` to clear them, or a list to replace them. |
+
+Replacement really does replace: addresses are not matched up and edited in
+place, so their ids change when a contact is saved. That is the right reading
+of `PUT`, which replaces the whole contact.
+
+Like photos, addresses are **not** included in list responses — see the note
+above on keeping a page small. Fetch a single contact to get them.
 
 ### List query parameters
 
