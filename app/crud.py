@@ -19,6 +19,18 @@ def _normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
+def _search_filter(search: str):
+    """Case-insensitive substring match across the fields the list endpoint searches."""
+    pattern = f"%{search.strip().lower()}%"
+    return or_(
+        func.lower(Contact.first_name).like(pattern),
+        func.lower(Contact.last_name).like(pattern),
+        func.lower(Contact.email).like(pattern),
+        func.lower(func.coalesce(Contact.company, "")).like(pattern),
+        func.lower(func.coalesce(Contact.phone, "")).like(pattern),
+    )
+
+
 def get_contact(db: Session, contact_id: int) -> Contact | None:
     return db.get(Contact, contact_id)
 
@@ -51,16 +63,7 @@ def list_contacts(
     stmt = select(*LIST_COLUMNS, Contact.photo.is_not(None).label("has_photo"))
 
     if search:
-        pattern = f"%{search.strip().lower()}%"
-        stmt = stmt.where(
-            or_(
-                func.lower(Contact.first_name).like(pattern),
-                func.lower(Contact.last_name).like(pattern),
-                func.lower(Contact.email).like(pattern),
-                func.lower(func.coalesce(Contact.company, "")).like(pattern),
-                func.lower(func.coalesce(Contact.phone, "")).like(pattern),
-            )
-        )
+        stmt = stmt.where(_search_filter(search))
 
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
 
@@ -88,6 +91,25 @@ def _set_addresses(contact: Contact, payloads: list[AddressCreate]) -> None:
     contact anyway.
     """
     contact.addresses = _build_addresses(payloads)
+
+
+def contacts_for_export(
+    db: Session,
+    *,
+    search: str | None = None,
+    limit: int = 200,
+) -> list[Contact]:
+    """
+    Whole contacts — photos and addresses included — for rendering to vCard.
+
+    Deliberately not `list_contacts`, which leaves the photo out of the query on
+    purpose. An export needs everything, so it is bounded by `limit` instead.
+    """
+    stmt = select(Contact)
+    if search:
+        stmt = stmt.where(_search_filter(search))
+
+    return list(db.execute(stmt.order_by(Contact.id).limit(limit)).scalars().all())
 
 
 def create_contact(db: Session, payload: ContactCreate) -> Contact:

@@ -101,6 +101,8 @@ also read):
 | `PATCH` | `/api/v1/contacts/{id}` | Partial update (only sent fields change) |
 | `DELETE` | `/api/v1/contacts/{id}` | Delete → `204` |
 | `GET` | `/api/v1/contacts/{id}/photo` | The contact's photo as image bytes (`ETag`, `304`) |
+| `GET` | `/api/v1/contacts/{id}/vcard` | The contact as a vCard 4.0 download |
+| `GET` | `/api/v1/contacts/vcard` | The whole address book as one vCard file |
 
 ### Contact fields
 
@@ -263,3 +265,40 @@ any **nullable** column the models declare and the database lacks. That is the
 one schema change that is always safe to apply automatically. Anything else — a
 drop, a type change, a backfill, a new non-nullable column — is refused with a
 clear error rather than guessed at, and needs a real migration tool.
+
+## vCard export
+
+A contact is only useful in an address book, so the API renders one — or the
+whole book — as **vCard 4.0** (RFC 6350), the format Apple Contacts, Google
+Contacts and Outlook all import.
+
+```bash
+curl -O -J http://127.0.0.1:8000/api/v1/contacts/1/vcard   # one person
+curl -O -J "http://127.0.0.1:8000/api/v1/contacts/vcard?search=lovelace"
+```
+
+Everything the app stores has somewhere to go. The photo becomes `PHOTO`, and
+because a contact has **many typed addresses**, each becomes its own `ADR` line
+carrying its type — which is the shape vCard expected all along:
+
+```
+BEGIN:VCARD
+VERSION:4.0
+FN:Ada Lovelace
+N:Lovelace;Ada;;;
+EMAIL;TYPE=work:ada@example.com
+ORG:Analytical Engines
+ADR;TYPE=work:;;1 Market St, Suite 400;San Francisco;CA;94105;USA
+ADR;TYPE=home:;;12 St James's Square;London;;SW1Y 4JH;UK
+PHOTO:data:image/jpeg;base64,/9j/4AAQ...
+END:VCARD
+```
+
+`app/vcard.py` handles the parts implementations usually get wrong: TEXT values
+are escaped (`\`, `;`, `,`, newlines), long lines are folded to 75 **octets**
+— counted in bytes but split between characters, so a multi-byte character is
+never cut in half — and every line ends `CRLF`.
+
+The collection export is bounded by `limit` (default 200, max 500) rather than
+paginated: a vCard file is a download, and photos make it large. Pass `search`
+to export only what you are looking at.

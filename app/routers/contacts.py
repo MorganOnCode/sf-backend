@@ -5,6 +5,8 @@ from app import crud
 from app.database import get_db
 from app.models import Contact
 from app.photo import decode_photo, photo_etag
+from app.vcard import MEDIA_TYPE as VCARD_MEDIA_TYPE
+from app.vcard import filename_for, render_vcard
 from app.schemas import (
     ContactCreate,
     ContactListItem,
@@ -114,6 +116,53 @@ def list_contacts(
     )
 
 
+def _vcard_response(contacts: list[Contact]) -> Response:
+    """A vCard document as a download, named after what it holds."""
+    return Response(
+        content=render_vcard(contacts),
+        media_type=VCARD_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename_for(contacts)}"'},
+    )
+
+
+VCARD_RESPONSES = {
+    status.HTTP_200_OK: {
+        "description": "A vCard 4.0 document.",
+        "content": {"text/vcard": {}},
+    }
+}
+
+
+@router.get(
+    "/vcard",
+    operation_id="exportContactsVcard",
+    summary="Export contacts as vCard",
+    response_class=Response,
+    response_description="A vCard 4.0 document holding every matching contact.",
+    responses=VCARD_RESPONSES,
+)
+def export_contacts_vcard(
+    db: Session = Depends(get_db),
+    search: str | None = Query(
+        default=None,
+        description="Export only the contacts this matches — the same search the list endpoint takes.",
+        examples=["lovelace"],
+    ),
+    limit: int = Query(default=200, ge=1, le=500, description="Maximum contacts to export (1–500)."),
+) -> Response:
+    """
+    Export the address book as a single vCard 4.0 file.
+
+    Every contact becomes one card, photo and all — and because a contact has
+    many typed addresses, each becomes its own `ADR` line carrying its type,
+    which is exactly what Apple Contacts, Google Contacts and Outlook expect.
+
+    Bounded by `limit` rather than paginated: a vCard file is a download, and
+    photos make it large. Pass `search` to export only what you are looking at.
+    """
+    return _vcard_response(crud.contacts_for_export(db, search=search, limit=limit))
+
+
 @router.get(
     "/{contact_id}",
     response_model=ContactRead,
@@ -175,6 +224,24 @@ def get_contact_photo(
 
     media_type, raw = decode_photo(contact.photo)
     return Response(content=raw, media_type=media_type, headers=headers)
+
+
+@router.get(
+    "/{contact_id}/vcard",
+    operation_id="getContactVcard",
+    summary="Export one contact as vCard",
+    response_class=Response,
+    response_description="A vCard 4.0 document holding this contact.",
+    responses={**VCARD_RESPONSES, status.HTTP_404_NOT_FOUND: NOT_FOUND},
+)
+def get_contact_vcard(contact_id: int = CONTACT_ID, db: Session = Depends(get_db)) -> Response:
+    """
+    Export a single contact as a vCard 4.0 file.
+
+    The download is named after the person, so saving several of them does not
+    produce a folder of `contact (3).vcf`.
+    """
+    return _vcard_response([_get_or_404(db, contact_id)])
 
 
 @router.put(
