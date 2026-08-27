@@ -4,8 +4,8 @@ from typing import Any
 from sqlalchemy import Row, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Contact
-from app.schemas import ContactCreate, ContactReplace, ContactUpdate
+from app.models import Address, Contact
+from app.schemas import AddressCreate, ContactCreate, ContactReplace, ContactUpdate
 
 SORTABLE_FIELDS = ("id", "first_name", "last_name", "email", "company", "created_at", "updated_at")
 
@@ -73,10 +73,30 @@ def list_contacts(
     return items, total
 
 
+def _build_addresses(payloads: list[AddressCreate]) -> list[Address]:
+    return [Address(**payload.model_dump()) for payload in payloads]
+
+
+def _set_addresses(contact: Contact, payloads: list[AddressCreate]) -> None:
+    """
+    Replace a contact's addresses with the ones supplied.
+
+    Assigning the collection is enough: `delete-orphan` on the relationship
+    deletes the rows that dropped out. Stored addresses are therefore replaced
+    rather than matched up and edited, so their ids change on every save — the
+    right semantics for the `PUT` behind the edit form, which replaces the whole
+    contact anyway.
+    """
+    contact.addresses = _build_addresses(payloads)
+
+
 def create_contact(db: Session, payload: ContactCreate) -> Contact:
     data = payload.model_dump()
     data["email"] = _normalize_email(data["email"])
-    contact = Contact(**data)
+    addresses = payload.addresses
+    data.pop("addresses", None)
+
+    contact = Contact(**data, addresses=_build_addresses(addresses))
     db.add(contact)
     db.commit()
     db.refresh(contact)
@@ -85,7 +105,11 @@ def create_contact(db: Session, payload: ContactCreate) -> Contact:
 
 def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> Contact:
     for field, value in payload.model_dump().items():
+        if field == "addresses":
+            continue  # set from the parsed models below, not the dumped dicts
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
+
+    _set_addresses(contact, payload.addresses)
     db.commit()
     db.refresh(contact)
     return contact
@@ -93,7 +117,15 @@ def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> C
 
 def update_contact(db: Session, contact: Contact, payload: ContactUpdate) -> Contact:
     for field, value in payload.model_dump(exclude_unset=True).items():
+        if field == "addresses":
+            continue
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
+
+    # `exclude_unset` is what separates "leave the addresses alone" (key absent)
+    # from "remove them all" (key present and empty).
+    if "addresses" in payload.model_fields_set and payload.addresses is not None:
+        _set_addresses(contact, payload.addresses)
+
     db.commit()
     db.refresh(contact)
     return contact
