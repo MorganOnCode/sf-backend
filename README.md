@@ -100,6 +100,7 @@ also read):
 | `PUT` | `/api/v1/contacts/{id}` | Full replace (omitted fields are cleared) |
 | `PATCH` | `/api/v1/contacts/{id}` | Partial update (only sent fields change) |
 | `DELETE` | `/api/v1/contacts/{id}` | Delete → `204` |
+| `GET` | `/api/v1/contacts/{id}/photo` | The contact's photo as image bytes (`ETag`, `304`) |
 
 ### Contact fields
 
@@ -122,7 +123,7 @@ as a base64 `data:` URL:
 data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...
 ```
 
-JPEG, PNG, GIF, and WebP are accepted, up to **2 MB decoded**. The declared
+JPEG, PNG, GIF, and WebP are accepted, up to **512 KB decoded**. The declared
 media type is checked against the decoded bytes' magic number, so it cannot
 lie; SVG is rejected outright because it can carry script. Omit the field or
 send `null` for no photo — clients then fall back to the contact's initials.
@@ -130,6 +131,22 @@ send `null` for no photo — clients then fall back to the contact's initials.
 Because `PUT` clears anything you omit, a client editing a contact must send
 the existing `photo` back or the photo is dropped. Use `PATCH` to change one
 field without touching the rest.
+
+**Lists do not inline photos.** A page can hold 200 contacts, so repeating a
+photo on every row would let one response reach hundreds of megabytes. List
+items carry `has_photo` instead, and the column is not even selected:
+
+```jsonc
+// GET /api/v1/contacts
+{ "items": [{ "id": 1, "first_name": "Ada", ..., "has_photo": true }], "total": 1 }
+```
+
+Fetch the image itself from `GET /api/v1/contacts/{id}/photo`, which returns
+the decoded bytes with the right `Content-Type` and a strong `ETag` — so an
+unchanged avatar is a `304` on every render after the first. A contact with no
+photo returns `404`, which is the client's cue to show initials. `GET` on a
+single contact still includes the full `photo`, which is what an edit form
+needs to round-trip it.
 
 ### List query parameters
 
@@ -195,3 +212,16 @@ app/
   routers/contacts.py REST endpoints
 tests/                API tests via FastAPI TestClient
 ```
+
+## Schema changes
+
+Startup calls `create_all`, which creates missing tables but never alters
+existing ones. That is fine for the in-memory default, which is rebuilt on every
+boot, but a file-backed SQLite or PostgreSQL database would keep an old shape and
+fail every query after a column was added.
+
+`init_db` therefore follows `create_all` with `_add_missing_columns`, which adds
+any **nullable** column the models declare and the database lacks. That is the
+one schema change that is always safe to apply automatically. Anything else — a
+drop, a type change, a backfill, a new non-nullable column — is refused with a
+clear error rather than guessed at, and needs a real migration tool.

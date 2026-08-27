@@ -14,10 +14,20 @@ src>`, so it is checked three ways before it is accepted:
 
 import base64
 import binascii
+import hashlib
 import re
 
-MAX_PHOTO_BYTES = 2 * 1024 * 1024
-"""Largest decoded image accepted."""
+MAX_PHOTO_BYTES = 512 * 1024
+"""
+Largest decoded image accepted.
+
+Deliberately modest. A photo is only ever shown as an avatar, clients downscale
+before uploading, and the ceiling has to leave room for the whole `data:` URL to
+fit inside a Next.js server action's 1 MB default request body.
+"""
+
+MAX_PHOTO_LABEL = f"{MAX_PHOTO_BYTES // 1024} KB"
+"""How the limit is described to a client."""
 
 # Reject an oversized string before spending memory decoding it. Base64 inflates
 # by 4/3, plus room for the `data:...;base64,` prefix.
@@ -54,7 +64,7 @@ def validate_photo(value: str | None) -> str | None:
         return None
 
     if len(photo) > _MAX_DATA_URL_CHARS:
-        raise ValueError(f"photo must be {MAX_PHOTO_BYTES // 1024 // 1024} MB or smaller")
+        raise ValueError(f"photo must be {MAX_PHOTO_LABEL} or smaller")
 
     match = _DATA_URL.fullmatch(photo)
     if match is None:
@@ -71,9 +81,28 @@ def validate_photo(value: str | None) -> str | None:
         raise ValueError("photo is not valid base64") from exc
 
     if len(raw) > MAX_PHOTO_BYTES:
-        raise ValueError(f"photo must be {MAX_PHOTO_BYTES // 1024 // 1024} MB or smaller")
+        raise ValueError(f"photo must be {MAX_PHOTO_LABEL} or smaller")
 
     if not signature(raw):
         raise ValueError(f"photo does not contain a valid {media_type} image")
 
     return photo
+
+
+def decode_photo(photo: str) -> tuple[str, bytes]:
+    """
+    Split a validated photo into its media type and raw bytes.
+
+    Only ever called with a value that already passed `validate_photo` on the way
+    in, so a mismatch here means the stored data was corrupted, not that a client
+    sent something bad.
+    """
+    match = _DATA_URL.fullmatch(photo)
+    if match is None:
+        raise ValueError("stored photo is not a base64 data URL")
+    return match.group("media_type"), base64.b64decode(match.group("data"), validate=True)
+
+
+def photo_etag(photo: str) -> str:
+    """A strong ETag for a photo, so an unchanged avatar is re-fetched as a 304."""
+    return f'"{hashlib.sha256(photo.encode()).hexdigest()[:32]}"'

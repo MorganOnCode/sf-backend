@@ -1,11 +1,14 @@
+import logging
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.config import get_settings
+
+logger = logging.getLogger("contacts.database")
 
 
 class Base(DeclarativeBase):
@@ -45,11 +48,49 @@ def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
     cursor.close()
 
 
+def _add_missing_columns() -> None:
+    """
+    Add columns the models declare that an existing table does not have yet.
+
+    `create_all` creates missing *tables* but never alters existing ones, so a
+    database created before a column was added — the file-backed SQLite and
+    PostgreSQL setups `CONTACTS_DATABASE_URL` documents — would fail every query
+    that selects the full entity. Adding a nullable column is the one schema
+    change that is always safe to apply automatically. Anything else (drops,
+    type changes, backfills) is refused here and needs a real migration tool.
+    """
+    inspector = inspect(engine)
+    preparer = engine.dialect.identifier_preparer
+
+    for table in Base.metadata.sorted_tables:
+        present = {column["name"] for column in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in present:
+                continue
+            if not column.nullable:
+                raise RuntimeError(
+                    f"{table.name}.{column.name} is missing from the database and cannot be added "
+                    "automatically because it is not nullable. Migrate the database by hand."
+                )
+            # Identifiers come from our own metadata, never from a request, and are
+            # quoted by the dialect regardless.
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        f"ALTER TABLE {preparer.format_table(table)} "
+                        f"ADD COLUMN {preparer.format_column(column)} "
+                        f"{column.type.compile(engine.dialect)}"
+                    )
+                )
+            logger.info("added missing column %s.%s", table.name, column.name)
+
+
 def init_db() -> None:
-    """Create tables. Called on startup; safe to call repeatedly."""
+    """Create tables and add any newly declared columns. Safe to call repeatedly."""
     from app import models  # noqa: F401  (register models on Base.metadata)
 
     Base.metadata.create_all(bind=engine)
+    _add_missing_columns()
 
 
 def get_db() -> Generator[Session, None, None]:
