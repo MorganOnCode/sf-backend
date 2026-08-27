@@ -4,7 +4,7 @@ import base64
 
 import pytest
 
-from app.photo import MAX_PHOTO_BYTES, MAX_PHOTO_LABEL, validate_photo
+from app.photo import MAX_PHOTO_BYTES, MAX_PHOTO_LABEL, etag_matches, validate_photo
 
 BASE = "/api/v1/contacts"
 
@@ -135,6 +135,55 @@ def test_photo_endpoint_revalidates_with_an_etag(client, payload):
 
     assert response.status_code == 304
     assert not response.content
+
+
+@pytest.mark.parametrize(
+    "header",
+    ["{etag}", '"cached-something-else", {etag}', "W/{etag}", "*", "  {etag}  "],
+    ids=["verbatim-echo", "one-of-a-list", "weakened-in-transit", "wildcard", "padded"],
+)
+def test_photo_endpoint_honours_every_form_of_if_none_match(client, payload, header):
+    """
+    RFC 9110 §13.1.2: the header is a list, `*` matches any representation, and
+    a `GET` compares weakly. Each of these means "I already have this photo".
+    """
+    contact_id = client.post(BASE, json={**payload, "photo": PNG}).json()["id"]
+    etag = client.get(f"{BASE}/{contact_id}/photo").headers["etag"]
+
+    response = client.get(
+        f"{BASE}/{contact_id}/photo",
+        headers={"If-None-Match": header.format(etag=etag)},
+    )
+
+    assert response.status_code == 304
+    assert not response.content
+    assert response.headers["etag"] == etag
+
+
+@pytest.mark.parametrize(
+    "header",
+    ['"stale"', '"one", "other"'],
+    ids=["stale-tag", "list-of-stale-tags"],
+)
+def test_photo_endpoint_sends_the_image_when_nothing_matches(client, payload, header):
+    contact_id = client.post(BASE, json={**payload, "photo": PNG}).json()["id"]
+
+    response = client.get(f"{BASE}/{contact_id}/photo", headers={"If-None-Match": header})
+
+    assert response.status_code == 200
+    assert response.content
+
+
+def test_etag_matching_follows_rfc_9110():
+    assert etag_matches('"a"', '"a"')
+    assert etag_matches('W/"a"', '"a"'), "a GET revalidates with the weak comparison"
+    assert etag_matches('"x", "a", "y"', '"a"'), "the header carries a list"
+    assert etag_matches("*", '"a"'), "the wildcard matches any representation we have"
+    assert etag_matches('"a,b"', '"a,b"'), "a tag may itself contain a comma"
+
+    assert not etag_matches('"b"', '"a"')
+    assert not etag_matches("", '"a"')
+    assert not etag_matches(None, '"a"')
 
 
 def test_photo_endpoint_404s_when_there_is_no_photo(client, payload):

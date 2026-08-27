@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app import crud
 from app.database import get_db
 from app.models import Contact
-from app.photo import decode_photo, photo_etag
+from app.photo import decode_photo, etag_matches, photo_etag
 from app.schemas import (
     ContactCreate,
     ContactListItem,
@@ -170,7 +170,7 @@ def get_contact_photo(
     etag = photo_etag(contact.photo)
     # Photos are private to the address book, so allow caching but not by shared proxies.
     headers = {"ETag": etag, "Cache-Control": "private, max-age=300"}
-    if if_none_match == etag:
+    if etag_matches(if_none_match, etag):
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
 
     media_type, raw = decode_photo(contact.photo)

@@ -106,3 +106,29 @@ def decode_photo(photo: str) -> tuple[str, bytes]:
 def photo_etag(photo: str) -> str:
     """A strong ETag for a photo, so an unchanged avatar is re-fetched as a 304."""
     return f'"{hashlib.sha256(photo.encode()).hexdigest()[:32]}"'
+
+
+# A quoted entity tag, optionally marked weak. Tags are *scanned* out of the
+# header rather than split on commas, because a tag is allowed to contain one.
+_ENTITY_TAG = re.compile(r'(?:W/)?"[^"]*"')
+
+
+def etag_matches(if_none_match: str | None, etag: str) -> bool:
+    """
+    Whether an `If-None-Match` header says the client already has this photo.
+
+    Per RFC 9110 §13.1.2 the header is a *list*, `*` stands for any current
+    representation, and revalidating a `GET` compares tags *weakly* — `W/"x"`
+    matches `"x"`, since the two differ only in ways a cache does not care
+    about. Testing the raw header against our one tag instead would answer
+    `200` to every well-formed request that is not a single verbatim echo,
+    re-sending an image the client already holds.
+    """
+    if not if_none_match:
+        return False
+    if if_none_match.strip() == "*":
+        return True
+    return any(
+        (tag[2:] if tag.startswith("W/") else tag) == etag
+        for tag in _ENTITY_TAG.findall(if_none_match)
+    )
