@@ -1,6 +1,24 @@
 from datetime import datetime, timezone
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+
+from app.photo import ALLOWED_MEDIA_TYPES, MAX_PHOTO_BYTES, validate_photo
+
+# A 1x1 transparent PNG — short enough to keep the OpenAPI examples readable.
+_EXAMPLE_PHOTO = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+    "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+PhotoDataUrl = Annotated[str | None, AfterValidator(validate_photo)]
+"""A base64 `data:` URL holding the contact's photo. See `app.photo`."""
+
+_PHOTO_DESCRIPTION = (
+    "Profile photo as a base64 `data:` URL. Accepts "
+    f"{', '.join(ALLOWED_MEDIA_TYPES)}, up to {MAX_PHOTO_BYTES // 1024 // 1024} MB decoded. "
+    "Send `null` or omit it for no photo — clients fall back to the contact's initials."
+)
 
 
 class ContactBase(BaseModel):
@@ -44,6 +62,11 @@ class ContactBase(BaseModel):
         description="Role held at the company.",
         examples=["Mathematician"],
     )
+    photo: PhotoDataUrl = Field(
+        default=None,
+        description=_PHOTO_DESCRIPTION,
+        examples=[_EXAMPLE_PHOTO],
+    )
     address: str | None = Field(
         default=None,
         max_length=300,
@@ -78,6 +101,7 @@ _FULL_EXAMPLE = {
     "phone": "+1-415-555-0101",
     "company": "Analytical Engines",
     "job_title": "Mathematician",
+    "photo": None,
     "address": "1 Market St, Suite 400",
     "city": "San Francisco",
     "state": "CA",
@@ -128,6 +152,7 @@ class ContactUpdate(BaseModel):
     phone: str | None = Field(default=None, max_length=40, description="New phone number.")
     company: str | None = Field(default=None, max_length=200, description="New company.")
     job_title: str | None = Field(default=None, max_length=200, description="New job title.")
+    photo: PhotoDataUrl = Field(default=None, description="New photo; send `null` to remove it.")
     address: str | None = Field(default=None, max_length=300, description="New street address.")
     city: str | None = Field(default=None, max_length=120, description="New city.")
     state: str | None = Field(default=None, max_length=120, description="New state or region.")

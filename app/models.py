@@ -23,6 +23,10 @@ class Contact(Base):
     company: Mapped[str | None] = mapped_column(String(200))
     job_title: Mapped[str | None] = mapped_column(String(200))
 
+    # Base64 `data:` URL rather than a file path: the service is self-contained,
+    # so there is no object store to point at. Validated in `schemas.PhotoDataUrl`.
+    photo: Mapped[str | None] = mapped_column(Text)
+
     address: Mapped[str | None] = mapped_column(String(300))
     city: Mapped[str | None] = mapped_column(String(120))
     state: Mapped[str | None] = mapped_column(String(120))

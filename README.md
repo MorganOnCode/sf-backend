@@ -107,11 +107,29 @@ also read):
 (case-insensitive). Everything else is optional.
 
 ```
-first_name, last_name, email, phone, company, job_title,
+first_name, last_name, email, phone, company, job_title, photo,
 address, city, state, postal_code, country, notes
 ```
 
 Responses add `id`, `full_name`, `created_at`, and `updated_at` (UTC).
+
+#### `photo`
+
+There is no file storage to upload to, so a contact's photo is sent and stored
+as a base64 `data:` URL:
+
+```
+data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...
+```
+
+JPEG, PNG, GIF, and WebP are accepted, up to **2 MB decoded**. The declared
+media type is checked against the decoded bytes' magic number, so it cannot
+lie; SVG is rejected outright because it can carry script. Omit the field or
+send `null` for no photo — clients then fall back to the contact's initials.
+
+Because `PUT` clears anything you omit, a client editing a contact must send
+the existing `photo` back or the photo is dropped. Use `PATCH` to change one
+field without touching the rest.
 
 ### List query parameters
 
